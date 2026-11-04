@@ -1,0 +1,51 @@
+name: agentid-scan-backup
+
+# Independent discovery backup for the Agent ID mint watch.
+# Runs entirely on GitHub's free tier: the repo MUST be public
+# (public repos get unlimited standard-runner minutes; private repos
+# are capped at 2,000 min/month, which this cadence would exhaust).
+# Everything scanned is public on-chain data; no secrets live here.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agentid-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Factory creation scan (four.meme / flap / gang.fun)
+        run: |
+          python3 factory_scan.py > factory_out.json || echo '{"creations":[]}' > factory_out.json
+          head -c 300 factory_out.json; echo
+
+      - name: Registry-reference scan (Agent ID registry bytecode refs)
+        run: |
+          python3 registry_scan.py --max-blocks 3000 > registry_out.json || echo '{"hits":[]}' > registry_out.json
+          head -c 300 registry_out.json; echo
+
+      - name: Collect new items into feed (dedup by CA + GoPlus enrich)
+        run: python3 collect.py
+
+      - name: Commit state + feed
+        run: |
+          git config user.name "agentid-scan-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add factory-scan-state.json registry-scan-state.json feed.jsonl
+          if git diff --cached --quiet; then
+            echo "no changes"
+          else
+            git commit -m "scan $(date -u +%FT%TZ)"
+            git push
+          fi
